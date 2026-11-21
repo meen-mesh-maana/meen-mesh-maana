@@ -170,9 +170,10 @@ async function main() {
   const spyNames2 = new Set(clients.filter(c => c.last().game.spiesKnown.includes(c.me().id)).map(c => c.name));
   let scoresOk = true;
   for (const c of clients) {
-    const expected = (spyNames2.has(c.name) ? 3 : 0) + (c === spy1 ? 0 : 2);
+    const expected = (spyNames2.has(c.name) ? 3 : 0) + (c.name === spy1.name ? 0 : 2);
     if (scores2[c.name] !== expected) scoresOk = false;
   }
+  if (!scoresOk) console.log(`  [dbg] spy1=${spy1.name} spyNames2=${[...spyNames2].join(",")} scores2=${JSON.stringify(scores2)}`);
   ok(scoresOk, `scores after round 2: ${JSON.stringify(scores2)}`);
 
   // 5) الجولة التالتة — أسئلة بالدور: دورتين موجهتين + ساحة مفتوحة + تصويت بزرار الهوست بس
@@ -245,7 +246,86 @@ async function main() {
   await clients[0].waitFor(s => s.phase === "voting", "host trigger starts voting");
   ok((clients[0].last().game.questions || []).length === qBefore + 3, "all questions replayable during voting");
 
-  // 6) leave يقفل الروم لما الكل يمشي
+  // نخلّص الجولة التالتة للآخر: الكل يصوّت على الجاسوس، تخمين غلط، نتايج
+  {
+    const spy3 = clients.find(c => (c.last().game.spiesKnown || []).includes(c.me().id));
+    ok(Boolean(spy3), "round 3 spy identified from spiesKnown");
+    const innocent3 = clients.find(c => c !== spy3);
+    for (const c of clients) c.send({ type: "vote", targetId: c === spy3 ? innocent3.me().id : spy3.me().id });
+    await clients[0].waitFor(s => s.phase === "spyGuess", "round 3 spyGuess");
+    spy3.send({ type: "spyGuess", word: "تخمين غلط" });
+    await clients[0].waitFor(s => s.phase === "results", "round 3 results");
+  }
+
+  // 6) الجولة الرابعة — كلمة وهمية + هينت + فريق الجواسيس + ٢ بره
+  clients[0].send({ type: "nextRound" });
+  await clients[0].waitFor(s => s.phase === "lobby", "round 4 lobby");
+  clients[0].send({ type: "start", spies: 2, fakeWord: true, hint: true, spyTeam: true, discussionSec: 60 });
+  await Promise.all(clients.map(c => c.waitFor(s => s.round === 4 && s.phase === "reveal", `round 4 reveal ${c.name}`)));
+  {
+    const words = clients.map(c => c.last().game.word);
+    ok(words.every(w => typeof w === "string" && w.length > 0), "fake-word mode: everyone sees a word (nobody knows they're out)");
+    const uniq = new Set(words);
+    ok(uniq.size === 2, "exactly two words in play (real + fake)");
+    const counts = {}; words.forEach(w => counts[w] = (counts[w] || 0) + 1);
+    ok(Object.values(counts).sort().join(",") === "2,3", "fake word held by exactly the 2 spies");
+    ok(clients.every(c => c.last().game.isSpy === false), "with fake word nobody is told they're out during reveal");
+    ok(clients.every(c => !c.last().game.hint), "hint suppressed when fake word is on");
+  }
+  // revealReady من الكل -> يكمل من غير ما الهوست يعدّي
+  for (const c of clients) c.send({ type: "revealReady" });
+  await Promise.all(clients.map(c => c.waitFor(s => s.phase === "discussion", `round 4 discussion ${c.name}`)));
+  // في مرحلة spyGuess الجواسيس يعرفوا نفسهم
+  clients[0].send({ type: "startVote" });
+  await clients[0].waitFor(s => s.phase === "voting", "round 4 voting");
+  const spiesKnownNow = clients[0].last().game.spiesKnown;
+  for (const c of clients) c.send({ type: "vote", targetId: spiesKnownNow.find(id => id !== c.me().id) || spiesKnownNow[0] });
+  await clients[0].waitFor(s => s.phase === "spyGuess", "round 4 spyGuess");
+  const caughtSpy = clients.find(c => c.me().id === clients[0].last().game.caught || c.last().game.isSpy);
+  ok(clients.some(c => c.last().game.isSpy), "spy learns the truth at guess phase even with fake word");
+  const caughtClient = clients.find(c => c.last().game.isSpy);
+  caughtClient.send({ type: "spyGuess", word: "تخمين غلط" });
+  await clients[0].waitFor(s => s.phase === "results", "round 4 results");
+  ok((clients[0].last().game.resultLines || []).some(l => l.includes("الوهمية")), "results mention the fake word");
+  ok(((clients[0].last().game.resultLines || [])[0] || "").includes("اللي بره هو"), "results open with اللي بره هو");
+
+  // 7) الجولة الخامسة — وضع التمرير (pass-and-play): الأدوار على موبايل الهوست بس
+  clients[0].send({ type: "nextRound" });
+  await clients[0].waitFor(s => s.phase === "lobby", "round 5 lobby");
+  clients[0].send({ type: "start", spies: 1, passPlay: true, discussionSec: 60 });
+  await Promise.all(clients.map(c => c.waitFor(s => s.round === 5 && s.phase === "reveal", `round 5 reveal ${c.name}`)));
+  ok(clients[0].last().game.pass && clients[0].last().game.pass.total === 5 && clients[0].last().game.pass.idx === 0, "host sees pass queue");
+  ok(clients.slice(1).every(c => c.last().game.passWaiting === true && !c.last().game.word && !c.last().game.isSpy), "non-host devices see no secrets during pass");
+  ok(!clients[0].last().game.word, "host own word suppressed until pass");
+  const seen = [];
+  for (let i = 0; i < 5; i++) {
+    const st = clients[0].last().game.pass;
+    ok(st && st.currentName, `pass ${i + 1} names a player`);
+    clients[0].send({ type: "passShow" });
+    await clients[0].waitFor(s => s.game?.pass?.shown === true, `pass ${i + 1} shown`);
+    const role = clients[0].last().game.pass.role;
+    ok(role && (role.isSpy || (typeof role.word === "string" && role.word.length > 0)), `pass ${i + 1} role payload present (${st.currentName})`);
+    seen.push(role.isSpy ? "SPY" : role.word);
+    clients[0].send({ type: "passNext" });
+    await sleep(200);
+  }
+  await Promise.all(clients.map(c => c.waitFor(s => s.phase === "discussion", `round 5 discussion ${c.name}`)));
+  ok(seen.filter(x => x === "SPY").length === 1, "exactly 1 spy seen across the pass");
+  ok(new Set(seen.filter(x => x !== "SPY")).size === 1, "all جوة players saw the same word during pass");
+  // بعد التمرير، كل جهاز يرجع يشوف دوره هو
+  const spy5 = clients.filter(c => c.last().game.isSpy);
+  ok(spy5.length === 1 && spy5[0].last().game.word === null, "after pass, the spy's own device shows انت بره");
+  ok(clients.filter(c => !c.last().game.isSpy).every(c => c.last().game.word), "after pass, جوة devices show the word");
+  clients[0].send({ type: "startVote" });
+  await clients[0].waitFor(s => s.phase === "voting", "round 5 voting");
+  const spy5Id = spy5[0].me().id;
+  for (const c of clients) c.send({ type: "vote", targetId: c.me().id === spy5Id ? clients.find(x => x.me().id !== spy5Id).me().id : spy5Id });
+  await clients[0].waitFor(s => s.phase === "spyGuess", "round 5 spyGuess");
+  spy5[0].send({ type: "spyGuess", word: "لسه غلط" });
+  await clients[0].waitFor(s => s.phase === "results", "round 5 results");
+  ok(clients[0].last().game.caught === spy5Id, "pass-play round fully playable to results");
+
+  // 8) leave يقفل الروم لما الكل يمشي
   for (const c of clients) c.send({ type: "leave" });
   await sleep(300);
   const ghost = new Client("ghost");

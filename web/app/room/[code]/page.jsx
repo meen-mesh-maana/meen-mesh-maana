@@ -5,6 +5,9 @@ import { GAME_TITLE } from "../../../lib/config";
 import { useGame, loadSession, saveSession } from "../../../lib/useGame";
 import { QuestioningPanel, QuestionsList } from "../../../lib/Questioning";
 import Confetti from "../../../lib/Confetti";
+import ScratchCard from "../../../lib/Scratch";
+
+const CAT_EMOJI = { "أكل": "🍔", "أماكن": "📍", "مهن": "👷", "حاجات في البيت": "🛋️", "مشاهير": "⭐", "كرتون": "🎨", "حيوانات": "🐾", "مواصلات": "🚗", "عشوائي": "🎲" };
 
 const AVATARS = ["🦊","🐼","🐸","🦁","🐰","🐯","🐨","🐷","🐮","🐵"];
 const avatarOf = (id, players) => AVATARS[Math.max(0, players.findIndex(p => p.id === id)) % AVATARS.length];
@@ -39,6 +42,14 @@ export default function RoomPage() {
   const [mins, setMins] = useState(4);
   const [mode, setMode] = useState("questions");
   const [cycles, setCycles] = useState(3);
+  const [hint, setHint] = useState(false);
+  const [fakeWord, setFakeWord] = useState(false);
+  const [spyTeam, setSpyTeam] = useState(false);
+  const [passPlay, setPassPlay] = useState(false);
+  const [readySent, setReadySent] = useState(false);
+
+  // لما جولة جديدة تبدأ، صفّر حالة "شوفت"
+  useEffect(() => { setReadySent(false); }, [state?.round, state?.phase]);
 
   // دخول تلقائي: عندنا توكن -> rejoin، عندنا اسم -> join
   useEffect(() => {
@@ -136,6 +147,17 @@ export default function RoomPage() {
             <div className="card">
               <h2>ظبط الجولة</h2>
               <div className="field">
+                <label>التصنيف</label>
+                <div className="cat-grid">
+                  {["عشوائي", ...(state.categories || [])].map((c) => (
+                    <button key={c} className={`cat-cell ${category === c ? "picked" : ""}`} onClick={() => setCategory(c)}>
+                      <span className="cat-emoji">{CAT_EMOJI[c] || "🃏"}</span>
+                      <span>{c}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="field">
                 <label>طريقة اللعب</label>
                 <div className="row">
                   <button className={mode === "questions" ? "btn-primary" : "btn-ghost"} onClick={() => setMode("questions")}>أسئلة بالدور 🎙️</button>
@@ -153,18 +175,36 @@ export default function RoomPage() {
                 </div>
               )}
               <div className="field">
-                <label>عدد الجواسيس</label>
+                <label>عدد اللي بره 🕵️</label>
                 <div className="row">
-                  <button className={spies === 1 ? "btn-primary" : "btn-ghost"} onClick={() => setSpies(1)}>واحد</button>
-                  <button className={spies === 2 ? "btn-primary" : "btn-ghost"} onClick={() => setSpies(2)}>اتنين</button>
+                  {[1, 2, 3].map((n) => (
+                    <button key={n} className={spies === n ? "btn-primary" : "btn-ghost"} onClick={() => setSpies(n)}>
+                      {n === 1 ? "واحد" : n === 2 ? "اتنين" : "تلاتة"}
+                    </button>
+                  ))}
                 </div>
               </div>
               <div className="field">
-                <label>التصنيف</label>
-                <select value={category} onChange={(e) => setCategory(e.target.value)}>
-                  <option value="عشوائي">عشوائي 🎲</option>
-                  {(state.categories || []).map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
+                <label>إعدادات اللي بره</label>
+                <div className="toggle-row" onClick={() => setFakeWord(!fakeWord)}>
+                  <span>كلمة وهمية 🎭 <small className="muted">اللي بره يشوف كلمة غلط وميعرفش إنه بره</small></span>
+                  <span className={`switch ${fakeWord ? "on" : ""}`} />
+                </div>
+                <div className="toggle-row" onClick={() => setSpyTeam(!spyTeam)}>
+                  <span>اللي بره يعرفوا بعض 🤝 <small className="muted">لو أكتر من واحد، كل واحد يشوف شريكه</small></span>
+                  <span className={`switch ${spyTeam ? "on" : ""}`} />
+                </div>
+                <div className="toggle-row" onClick={() => setHint(!hint)}>
+                  <span>تلميح للي بره 💡 <small className="muted">يعرف التصنيف بس (مش مع الكلمة الوهمية)</small></span>
+                  <span className={`switch ${hint ? "on" : ""}`} />
+                </div>
+              </div>
+              <div className="field">
+                <label>طريقة الكشف</label>
+                <div className="toggle-row" onClick={() => setPassPlay(!passPlay)}>
+                  <span>وضع التمرير 📲 <small className="muted">الموبايل يعدي على الكل وكل واحد يخربش دوره لوحده</small></span>
+                  <span className={`switch ${passPlay ? "on" : ""}`} />
+                </div>
               </div>
               <div className="field">
                 <label>وقت الكلام</label>
@@ -177,7 +217,7 @@ export default function RoomPage() {
               <button
                 className="btn-good"
                 disabled={players.length < 3}
-                onClick={() => send({ type: "start", spies, category, mode, cycles, discussionSec: mins * 60 })}
+                onClick={() => send({ type: "start", spies, category, mode, cycles, discussionSec: mins * 60, fakeWord, spyTeam, hint, passPlay })}
               >
                 يلا نبدأ! 🎬
               </button>
@@ -192,20 +232,79 @@ export default function RoomPage() {
       {phase === "reveal" && game && (
         <>
           <Countdown endsAt={game.timerEndsAt} />
-          {game.isSpy ? (
-            <div className="word-card spy">
-              <div className="cat">شششش 🤫</div>
-              <div className="word">انت الجاسوس!</div>
-              <p>محدش يعرف... حاول تفتي وتعرف الكلمة من كلامهم</p>
-            </div>
+          {game.config?.passPlay ? (
+            game.passWaiting ? (
+              <div className="card center">
+                <h2>الكشف سرّي 🤫</h2>
+                <p>الموبايل بيعدي على كل واحد يشوف دوره لوحده على موبايل الهوست</p>
+                {game.passName && <p className="muted">دلوقتي عند: <strong>{game.passName}</strong></p>}
+                <p className="muted">متبصش على الشاشة لو مش دورك 👀</p>
+              </div>
+            ) : game.pass ? (
+              <div className="card center">
+                <div className="muted">كشف {game.pass.idx + 1} من {game.pass.total}</div>
+                {!game.pass.shown ? (
+                  <>
+                    <h2 style={{ margin: "14px 0" }}>ادي الموبايل لـ <span style={{ color: "var(--accent)" }}>{game.pass.currentName}</span> 📲</h2>
+                    <p className="muted">ومحدش غيره يبص على الشاشة!</p>
+                    <button className="btn-primary" onClick={() => send({ type: "passShow" })}>أنا {game.pass.currentName} ✋</button>
+                  </>
+                ) : (
+                  <>
+                    <ScratchCard key={game.pass.idx} height={240}>
+                      {game.pass.role?.isSpy ? (
+                        <div className="scratch-role spy-role">
+                          <div className="word">انت اللي بره! 🕵️</div>
+                          <p>محدش يعرف... فتّي بهدوء</p>
+                          {game.pass.role?.hint && <p className="muted">تلميح: التصنيف "{game.pass.role.hint}"</p>}
+                          {game.pass.role?.spyMates?.length > 0 && <p className="muted">شريكك بره: {game.pass.role.spyMates.join(" و")}</p>}
+                        </div>
+                      ) : (
+                        <div className="scratch-role">
+                          <div className="cat">التصنيف: {game.pass.role?.category}</div>
+                          <div className="word">{game.pass.role?.word}</div>
+                          <p>افتكرها كويس... في حد بره وسطكم</p>
+                        </div>
+                      )}
+                    </ScratchCard>
+                    <button className="btn-good" style={{ marginTop: 14 }} onClick={() => send({ type: "passNext" })}>
+                      خلاص شوفت، مرر الموبايل ➡️
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : null
           ) : (
-            <div className="word-card">
-              <div className="cat">التصنيف: {game.category}</div>
-              <div className="word">{game.word}</div>
-              <p>وصّف الكلمة من غير ما تقولها... وخلي بالك في جاسوس وسطكم</p>
-            </div>
+            <>
+              <ScratchCard height={240}>
+                {game.isSpy ? (
+                  <div className="scratch-role spy-role">
+                    <div className="word">انت اللي بره! 🕵️</div>
+                    <p>محدش يعرف... حاول تفتي وتعرف الكلمة من كلامهم</p>
+                    {game.hint && <p className="muted">تلميح: التصنيف "{game.hint}"</p>}
+                    {game.spyMates?.length > 0 && <p className="muted">اللي بره معاك: {game.spyMates.join(" و")}</p>}
+                  </div>
+                ) : (
+                  <div className="scratch-role">
+                    <div className="cat">التصنيف: {game.category}</div>
+                    <div className="word">{game.word}</div>
+                    <p>وصّف الكلمة من غير ما تقولها... وخلي بالك في حد بره وسطكم</p>
+                  </div>
+                )}
+              </ScratchCard>
+              <button
+                className="btn-good"
+                style={{ marginTop: 14 }}
+                disabled={readySent || game.youReady}
+                onClick={() => { setReadySent(true); send({ type: "revealReady" }); }}
+              >
+                {readySent || game.youReady ? `مستنيين الباقي... (${game.readyCount || 0}/${game.readyNeeded || 0})` : "تمام، شوفت ✅"}
+              </button>
+              {me?.isHost && (
+                <button className="btn-ghost" style={{ marginTop: 8 }} onClick={() => send({ type: "skipReveal" })}>عدّي الخربشة (هوست) 👇</button>
+              )}
+            </>
           )}
-          {me?.isHost && <button className="btn-primary" onClick={() => send({ type: "skipReveal" })}>خلاص شفنا، يلا بينا 👇</button>}
         </>
       )}
 
@@ -261,6 +360,7 @@ export default function RoomPage() {
           <Countdown endsAt={game.timerEndsAt} />
           {game.isSpy ? (
             <div className="card">
+              {game.config?.fakeWord && <div className="notice" style={{ cursor: "default" }}>طلعت انت اللي بره! 😱 الكلمة اللي شفتها كانت وهمية</div>}
               <h2>فرصتك الأخيرة! 🎯</h2>
               <p>لو خمّنت الكلمة صح هتكسب الجولة حتى لو مسكوك</p>
               <div className="field">

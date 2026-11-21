@@ -10,6 +10,7 @@
   --teal: #2ee6b7;
   --purple: #b98cff;
   --text: #fdf7ff;
+  --accent: var(--yellow);
   --muted: #c3aee0;
 }
 
@@ -289,3 +290,102 @@ audio { filter: invert(0.9) hue-rotate(180deg) saturate(0.6); border-radius: 20p
 @keyframes confetti-fall {
   to { transform: translateY(110vh) rotate(720deg); opacity: 0.8; }
 }
+
+/* ===== Bakasa rework: خربشة + تصنيفات + توجلات ===== */
+.scratch-box {
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(150deg, #241a3d, #160f28);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+.scratch-canvas {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  cursor: pointer;
+  border-radius: 18px;
+}
+.scratch-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  text-align: center;
+}
+.scratch-role .word {
+  font-size: 30px;
+  font-weight: 900;
+  color: #ffd166;
+  margin: 6px 0;
+  text-shadow: 0 2px 14px rgba(255, 209, 102, 0.25);
+}
+.scratch-role.spy-role .word { color: #ff6b81; text-shadow: 0 2px 14px rgba(255, 107, 129, 0.3); }
+.scratch-role .cat { color: var(--muted); font-size: 14px; font-weight: 700; }
+.scratch-role p { color: rgba(255, 255, 255, 0.85); margin: 8px 0 0; font-size: 14px; }
+
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.cat-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 6px;
+  border-radius: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.cat-cell:active { transform: scale(0.96); }
+.cat-cell.picked {
+  border-color: var(--accent);
+  background: rgba(255, 209, 102, 0.12);
+}
+.cat-emoji { font-size: 24px; }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 2px;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-row + .toggle-row { border-top: 1px solid rgba(255, 255, 255, 0.07); }
+.toggle-row span:first-child { font-weight: 700; font-size: 14px; line-height: 1.5; }
+.toggle-row small { display: block; font-weight: 400; font-size: 12px; }
+.switch {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 26px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.14);
+  position: relative;
+  transition: background 0.15s;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.switch.on { background: #2ecc71; }
+.switch.on::after { transform: translateX(-20px); }

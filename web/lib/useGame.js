@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 function wsUrl() {
   if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
   if (typeof window !== "undefined" && (location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
-    return "ws://localhost:8080";
+    return "ws://localhost:8090";
   }
   return "";
 }

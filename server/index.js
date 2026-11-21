@@ -3,10 +3,10 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 const crypto = require("crypto");
-const { CATEGORIES, pickWord, countWords } = require("./words");
+const { CATEGORIES, pickWord, pickFake, countWords } = require("./words");
 
 const PORT = process.env.PORT || 8080;
-const REVEAL_MS = 12000;          // وقت كشف الدور
+const REVEAL_MS = 90000;          // حد أقصى لوقت الخربشة (الكشف) — عادة بنكمل قبلها لما الكل يجهز
 const SPY_GUESS_MS = 45000;       // وقت تخمين الجاسوس
 const ROOM_IDLE_MS = 2 * 3600000; // مسح الرومات الخاملة
 const MAX_PLAYERS = 10;
@@ -32,7 +32,7 @@ function makeRoom(hostName) {
     phase: "lobby",
     players: [], // {id, token, name, score, connected, isHost}
     round: 0,
-    game: null, // {word, category, spies:[id], votes:{}, timerEndsAt, spyGuess, spyGuessCorrect, caught, resultLines, config, mode, questions, turnOrder, askedIds, turn}
+    game: null, // {word, fake, category, spies:[id], votes:{}, readyIds:[], timerEndsAt, spyGuess, spyGuessCorrect, caught, resultLines, config, mode, questions, turnOrder, askedIds, turn}
     audio: new Map(), // qid -> {buf, mime} للأسئلة الصوتية
     timer: null,
   };
@@ -61,11 +61,32 @@ function stateFor(room, player) {
   };
   if (room.game) {
     const g = room.game;
-    const isSpy = g.spies.includes(player.id);
+    const isSpyReal = g.spies.includes(player.id);
+    // لو الكلمة الوهمية شغالة، اللي بره بيشوف كلمة عادية وميعرفش إنه بره لحد ما يتصوّت عليه
+    const hidden = g.config.fakeWord && ["reveal", "questioning", "discussion"].includes(room.phase);
+    const isSpy = isSpyReal && !hidden;
+    const passHold = room.phase === "reveal" && g.config.passPlay; // في التمرير، الأدوار بتتكشف على موبايل الهوست بس
     s.game = {
       category: g.category,
-      isSpy,
-      word: isSpy ? null : g.word,
+      isSpy: passHold ? false : isSpy,
+      word: passHold ? undefined : (isSpyReal ? (hidden ? g.fake : null) : g.word),
+      // تلميح للي بره: التصنيف بس (لو الإعداد مفعّل والكلمة الوهمية مقفولة)
+      hint: isSpyReal && !hidden && g.config.hint ? g.category : undefined,
+      // اللي بره كفريق: كل جاسوس يشوف زمايله
+      spyMates: isSpyReal && !hidden && g.config.spyTeam ? g.spies.filter(id => id !== player.id).map(id => room.players.find(p => p.id === id)?.name).filter(Boolean) : undefined,
+      readyCount: room.phase === "reveal" ? g.readyIds.length : undefined,
+      readyNeeded: room.phase === "reveal" ? room.players.filter(p => p.connected).length : undefined,
+      youReady: room.phase === "reveal" ? g.readyIds.includes(player.id) : undefined,
+      // وضع التمرير: الكشف يحصل على موبايل الهوست لاعب لاعب، والأسرار متتبعتشش لأي جهاز تاني
+      pass: room.phase === "reveal" && g.config.passPlay && player.isHost ? {
+        idx: g.passIdx,
+        total: g.passOrder.length,
+        currentName: room.players.find(p => p.id === g.passOrder[g.passIdx])?.name,
+        shown: g.passShown,
+        role: g.passShown ? rolePayload(room, g, g.passOrder[g.passIdx]) : undefined,
+      } : undefined,
+      passWaiting: room.phase === "reveal" && g.config.passPlay && !player.isHost ? true : undefined,
+      passName: room.phase === "reveal" && g.config.passPlay && !player.isHost ? room.players.find(p => p.id === g.passOrder[g.passIdx])?.name : undefined,
       spiesKnown: room.phase === "results" || room.phase === "voting" || room.phase === "spyGuess" ? g.spies : undefined,
       timerEndsAt: g.timerEndsAt,
       votes: room.phase === "results" ? g.votes : countVotes(room),
@@ -88,6 +109,19 @@ function stateFor(room, player) {
   return s;
 }
 
+// حمولة الدور للاعب معين (تُستخدم في التمرير على موبايل الهوست وفي الكشف العادي)
+function rolePayload(room, g, pid) {
+  const isSpy = g.spies.includes(pid);
+  if (isSpy && !g.config.fakeWord) {
+    return {
+      isSpy: true,
+      hint: g.config.hint ? g.category : undefined,
+      spyMates: g.config.spyTeam ? g.spies.filter(id => id !== pid).map(id => room.players.find(p => p.id === id)?.name).filter(Boolean) : undefined,
+    };
+  }
+  return { isSpy: false, word: isSpy ? g.fake : g.word, category: g.category };
+}
+
 function countVotes(room) {
   const counts = {};
   for (const t of Object.values(room.game.votes)) counts[t] = (counts[t] || 0) + 1;
@@ -107,18 +141,21 @@ function err(ws, message) { send(ws, { type: "error", message }); }
 
 function startRound(room, config) {
   if (room.players.length < MIN_PLAYERS) return "محتاجين على الأقل ٣ لاعبين";
-  const nSpies = Math.min(Math.max(1, config.spies || 1), 2);
-  if (nSpies >= room.players.length) return "عدد الجواسيس كبير على عدد اللاعبين";
+  const nSpies = Math.min(Math.max(1, config.spies || 1), 3);
+  if (nSpies >= room.players.length - 1) return "عدد اللي بره كبير على عدد اللاعبين";
   const { word, category } = pickWord(config.category);
+  const fakeWord = config.fakeWord ? pickFake(category, word) : null;
   const shuffled = [...room.players].sort(() => Math.random() - 0.5);
+  const passOrder = [...room.players].sort(() => Math.random() - 0.5).map(p => p.id);
   room.round += 1;
   room.game = {
-    word, category,
+    word, fake: fakeWord, category,
     spies: shuffled.slice(0, nSpies).map(p => p.id),
-    votes: {},
+    votes: {}, readyIds: [],
+    passOrder, passIdx: 0, passShown: false,
     timerEndsAt: Date.now() + REVEAL_MS,
     spyGuess: null, spyGuessCorrect: false, caught: null, resultLines: null,
-    config: { spies: nSpies, category: category, discussionSec: config.discussionSec || 240, mode: config.mode === "questions" ? "questions" : "talk", cycles: Math.min(5, Math.max(1, config.cycles || 3)) },
+    config: { spies: nSpies, category: category, discussionSec: config.discussionSec || 240, mode: config.mode === "questions" ? "questions" : "talk", cycles: Math.min(5, Math.max(1, config.cycles || 3)), fakeWord: Boolean(fakeWord), spyTeam: Boolean(config.spyTeam), hint: Boolean(config.hint), passPlay: Boolean(config.passPlay) },
     mode: config.mode === "questions" ? "questions" : "talk",
     questions: [], turnOrder: [], askedIds: [], turn: null, cycle: 1, qMode: "directed",
   };
@@ -224,12 +261,14 @@ function finishRound(room) {
   clearTimer(room);
   const lines = [];
   const spyNames = g.spies.map(id => room.players.find(p => p.id === id)?.name).filter(Boolean);
+  lines.push(`اللي بره هو: ${spyNames.join(" و")} 🕵️`);
   if (g.caught) {
     const name = room.players.find(p => p.id === g.caught)?.name;
-    lines.push(`اللعيبة مسكوا الجاسوس: ${name}!`);
+    lines.push(`اللعيبة مسكوا اللي بره: ${name}!`);
   } else {
-    lines.push(`الجاسوس نجا من التصويت... (${spyNames.join(" و")})`);
+    lines.push(`اللي بره نجا من التصويت...`);
   }
+  if (g.fake) lines.push(`الكلمة الوهمية اللي ضحكنا بيها عليه: "${g.fake}" 😄`);
   if (g.spyGuess) {
     g.spyGuessCorrect = normalize(g.spyGuess) === normalize(g.word);
     lines.push(g.spyGuessCorrect ? `بس الجاسوس خمّن الكلمة صح: "${g.word}"!` : `الجاسوس خمّن "${g.spyGuess}" وكانت غلط.`);
@@ -320,11 +359,37 @@ wss.on("connection", (ws) => {
     if (m.type === "start") {
       if (!player.isHost) return err(ws, "الهوست بس اللي يبدأ");
       if (room.phase !== "lobby") return err(ws, "الجولة شغالة خلاص");
-      const e = startRound(room, { spies: m.spies, category: m.category, mode: m.mode, cycles: m.cycles, discussionSec: Math.min(600, Math.max(60, m.discussionSec || 240)) });
+      const e = startRound(room, { spies: m.spies, category: m.category, mode: m.mode, cycles: m.cycles, fakeWord: Boolean(m.fakeWord), spyTeam: Boolean(m.spyTeam), hint: Boolean(m.hint), passPlay: Boolean(m.passPlay), discussionSec: Math.min(600, Math.max(60, m.discussionSec || 240)) });
       if (e) return err(ws, e);
       return broadcast(room);
     }
-    if (m.type === "skipReveal" && room.phase === "reveal") return afterReveal(room);
+    if (m.type === "skipReveal" && room.phase === "reveal") {
+      if (!player.isHost) return err(ws, "الهوست بس اللي يعدّي الخربشة");
+      return afterReveal(room);
+    }
+    if (m.type === "passShow" && room.phase === "reveal" && room.game?.config.passPlay) {
+      if (!player.isHost) return;
+      room.game.passShown = true;
+      touch(room);
+      return broadcast(room);
+    }
+    if (m.type === "passNext" && room.phase === "reveal" && room.game?.config.passPlay) {
+      if (!player.isHost) return;
+      const g = room.game;
+      g.passShown = false;
+      g.passIdx += 1;
+      if (g.passIdx >= g.passOrder.length) return afterReveal(room);
+      touch(room);
+      return broadcast(room);
+    }
+    if (m.type === "revealReady" && room.phase === "reveal" && room.game) {
+      const g = room.game;
+      if (!g.readyIds.includes(player.id)) g.readyIds.push(player.id);
+      const connected = room.players.filter(p => p.connected);
+      if (connected.length && connected.every(p => g.readyIds.includes(p.id))) return afterReveal(room);
+      touch(room);
+      return broadcast(room);
+    }
     if (m.type === "startVote") {
       // التصويت بيبدأ بقرار الجروب — الهوست هو اللي بيدوس الزرار
       if (!player.isHost) return err(ws, "الهوست هو اللي يبدأ التصويت");
@@ -401,6 +466,12 @@ wss.on("connection", (ws) => {
       player.connected = false; player.ws = null;
       // لو اللي فصل كان دوره يسأل، عدّي الدور
       if (room.phase === "questioning" && room.game?.turn === player.id) advanceTurn(room);
+      // لو فصل في الخربشة والباقي كلهم جاهزين، كمّل
+      if (room.phase === "reveal" && room.game) {
+        const g = room.game;
+        const connected = room.players.filter(p => p.connected);
+        if (connected.length && connected.every(p => g.readyIds.includes(p.id))) return afterReveal(room);
+      }
       touch(room); broadcast(room);
     }
   });

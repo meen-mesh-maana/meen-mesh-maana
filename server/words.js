@@ -41,6 +41,12 @@ const WORD_BANK = {
     "حسن الرداد", "إيمي سمير غانم", "دنيا سمير غانم", "محمد فؤاد",
     "حميد الشاعري", "بهاء سلطان", "محمد منير", "أحمد عيد", "بيومي فؤاد", "مصطفى شعبان"
   ],
+  "كرتون": [
+    "توم وجيري", "سبونج بوب", "ميكي ماوس", "بوجي وطمطم", "السنافر",
+    "بين تن", "نينجا جو", "ماشا والدب", "بيبا بيج", "سكوبي دو",
+    "كونان", "ون بيس", "ناروتو", "دراغون بول", "كابتن ماجد",
+    "الفتى النبيل", "جريندايزر", "سندباد البحري", "عدنان ولينا", "بكار"
+  ],
   "حيوانات": [
     "قطة", "كلب", "حمامة", "عصفور", "بطة", "فرخة", "بقرة", "جاموسة", "معزة",
     "خروف", "حمار", "حصان", "جمل", "أسد", "نمر", "فيل", "زرافة", "قرد",
@@ -65,8 +71,15 @@ function pickWord(category) {
   return { word, category: cat };
 }
 
+// كلمة وهمية للي بره (لما الإعداد يتفعل): كلمة تانية من نفس التصنيف
+function pickFake(category, realWord) {
+  const words = (WORD_BANK[category] || []).filter(w => w !== realWord);
+  if (!words.length) return null;
+  return words[Math.floor(Math.random() * words.length)];
+}
+
 function countWords() {
   return CATEGORIES.reduce((n, c) => n + WORD_BANK[c].length, 0);
 }
 
-module.exports = { WORD_BANK, CATEGORIES, pickWord, countWords };
+module.exports = { WORD_BANK, CATEGORIES, pickWord, pickFake, countWords };
